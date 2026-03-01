@@ -1,7 +1,544 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+
+const API_BASE = import.meta.env.VITE_API_BASE || '/api';
+const USER_STORAGE_KEY = 'nesthub_user';
+const TOKEN_STORAGE_KEY = 'nesthub_token';
+
+const getStoredUser = () => {
+  try {
+    const raw = localStorage.getItem(USER_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (error) {
+    return null;
+  }
+};
+
+const navigateTo = (event, path, setPathname) => {
+  event.preventDefault();
+  if (window.location.pathname !== path) {
+    window.history.pushState({}, '', path);
+  }
+  setPathname(path);
+};
+
+const navigateWithoutEvent = (path, setPathname) => {
+  if (window.location.pathname !== path) {
+    window.history.pushState({}, '', path);
+  }
+  setPathname(path);
+};
+
+const AuthPage = ({ mode, onNavigateHome, onToggleMode, onAuthSuccess }) => {
+  const isRegister = mode === 'register';
+  const [form, setForm] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    password: '',
+    role: 'tenant'
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  const handleChange = (event) => {
+    const { name, value } = event.target;
+    setForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setError('');
+    setSuccess('');
+    setLoading(true);
+
+    const endpoint = isRegister ? `${API_BASE}/auth/register` : `${API_BASE}/auth/login`;
+    const payload = isRegister
+      ? {
+          name: form.name,
+          email: form.email,
+          phone: form.phone,
+          password: form.password,
+          role: form.role
+        }
+      : { email: form.email, password: form.password };
+
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const rawBody = await response.text();
+      let data = {};
+      try {
+        data = rawBody ? JSON.parse(rawBody) : {};
+      } catch (parseError) {
+        throw new Error(
+          'Auth API returned non-JSON response. Start backend on http://127.0.0.1:5000 and retry.'
+        );
+      }
+
+      if (!response.ok) {
+        throw new Error(data.message || 'Authentication failed');
+      }
+
+      localStorage.setItem('nesthub_token', data.token);
+      localStorage.setItem('nesthub_user', JSON.stringify(data.user));
+      setSuccess(isRegister ? 'Registration successful.' : 'Login successful.');
+      setTimeout(() => {
+        onAuthSuccess();
+      }, 500);
+    } catch (submitError) {
+      setError(submitError.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <main className="auth-page">
+      <div className="auth-shell">
+        <button className="auth-back" onClick={onNavigateHome}>
+          ← Back to Home
+        </button>
+        <h1 className="auth-title">{isRegister ? 'Create Account' : 'Welcome Back'}</h1>
+        <p className="auth-subtitle">
+          {isRegister
+            ? 'Register as a tenant or owner to start using NestHub.'
+            : 'Log in to manage listings, reviews, and ratings.'}
+        </p>
+
+        <form className="auth-form" onSubmit={handleSubmit}>
+          {isRegister && (
+            <>
+              <label>
+                Full Name
+                <input
+                  type="text"
+                  name="name"
+                  value={form.name}
+                  onChange={handleChange}
+                  required
+                />
+              </label>
+              <label>
+                Phone
+                <input
+                  type="tel"
+                  name="phone"
+                  value={form.phone}
+                  onChange={handleChange}
+                  required
+                />
+              </label>
+              <label>
+                Role
+                <select name="role" value={form.role} onChange={handleChange}>
+                  <option value="tenant">Tenant</option>
+                  <option value="owner">Owner</option>
+                </select>
+              </label>
+            </>
+          )}
+
+          <label>
+            Email
+            <input type="email" name="email" value={form.email} onChange={handleChange} required />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              name="password"
+              value={form.password}
+              onChange={handleChange}
+              required
+              minLength={6}
+            />
+          </label>
+
+          {error ? <p className="auth-message error">{error}</p> : null}
+          {success ? <p className="auth-message success">{success}</p> : null}
+
+          <button type="submit" className="auth-submit" disabled={loading}>
+            {loading ? 'Please wait...' : isRegister ? 'Register' : 'Login'}
+          </button>
+        </form>
+
+        <p className="auth-switch">
+          {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
+          <a href={isRegister ? '/login' : '/register'} onClick={onToggleMode}>
+            {isRegister ? 'Login' : 'Register'}
+          </a>
+        </p>
+      </div>
+    </main>
+  );
+};
+
+const ListingsPage = ({
+  listings,
+  loading,
+  error,
+  currentUser,
+  deletingListingId,
+  reviewDrafts,
+  reviewSubmittingId,
+  reviewStatus,
+  onReviewDraftChange,
+  onSubmitReview,
+  onDeleteListing,
+  onNavigateHome,
+  onNavigateAddListing
+}) => {
+  return (
+    <main className="listings-page">
+      <div className="listings-shell">
+        <div className="listings-topbar">
+          <button type="button" className="auth-back" onClick={onNavigateHome}>
+            ← Back to Home
+          </button>
+          <button type="button" className="nav-cta" onClick={onNavigateAddListing}>
+            Add Listing
+          </button>
+        </div>
+
+        <h1 className="auth-title">All Listings</h1>
+        <p className="auth-subtitle">Browse all PG, flat, and hostel listings added on NestHub.</p>
+
+        {loading ? <p className="listings-feedback">Loading listings...</p> : null}
+        {error ? <p className="auth-message error">{error}</p> : null}
+
+        {!loading && !error && listings.length === 0 ? (
+          <p className="listings-feedback">No listings available yet. Be the first one to add.</p>
+        ) : null}
+
+        <div className="listings-grid">
+          {listings.map((listing) => (
+            <article key={listing._id || listing.id} className="listing-item">
+              {listing.image_url ? (
+                <img
+                  className="listing-image"
+                  src={listing.image_url}
+                  alt={listing.title}
+                  loading="lazy"
+                  onError={(event) => {
+                    event.currentTarget.style.display = 'none';
+                  }}
+                />
+              ) : null}
+              <div className="listing-item-head">
+                <span className="listing-type">{listing.type}</span>
+                <span className="listing-price">Rs {listing.price}/month</span>
+              </div>
+              <h3 className="listing-title">{listing.title}</h3>
+              <p className="listing-location">
+                {listing.locality}, {listing.city}
+              </p>
+              <p className="listing-description">{listing.description}</p>
+              {currentUser?.role === 'tenant' ? (
+                <div className="review-box">
+                  <textarea
+                    className="review-input"
+                    rows={3}
+                    value={reviewDrafts[listing._id || listing.id] || ''}
+                    onChange={(event) =>
+                      onReviewDraftChange(listing._id || listing.id, event.target.value)
+                    }
+                    placeholder="Write your review as a tenant..."
+                  />
+                  <button
+                    type="button"
+                    className="review-submit-btn"
+                    disabled={reviewSubmittingId === (listing._id || listing.id)}
+                    onClick={() => onSubmitReview(listing._id || listing.id)}
+                  >
+                    {reviewSubmittingId === (listing._id || listing.id)
+                      ? 'Submitting...'
+                      : 'Submit Review'}
+                  </button>
+                  {reviewStatus[listing._id || listing.id] ? (
+                    <p className="review-status">{reviewStatus[listing._id || listing.id]}</p>
+                  ) : null}
+                </div>
+              ) : null}
+              {currentUser?.id && listing?.owner_id?._id === currentUser.id ? (
+                <button
+                  type="button"
+                  className="listing-delete-btn"
+                  onClick={() => onDeleteListing(listing._id || listing.id)}
+                  disabled={deletingListingId === (listing._id || listing.id)}
+                >
+                  {deletingListingId === (listing._id || listing.id) ? 'Deleting...' : 'Delete'}
+                </button>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      </div>
+    </main>
+  );
+};
+
+const AddListingPage = ({ currentUser, onNavigateHome, onCreated }) => {
+  const imageInputRef = useRef(null);
+  const [form, setForm] = useState({
+    title: '',
+    type: 'PG',
+    city: '',
+    locality: '',
+    price: '',
+    description: '',
+    image_url: ''
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [imageProcessing, setImageProcessing] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  const handleChange = (event) => {
+    const { name, value } = event.target;
+    setForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const readFileAsDataUrl = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result || '');
+      reader.onerror = () => reject(new Error('Failed to read image file.'));
+      reader.readAsDataURL(file);
+    });
+
+  const convertImageToJpegDataUrl = async (file) => {
+    const originalDataUrl = await readFileAsDataUrl(file);
+    if (!file.type.startsWith('image/')) {
+      return originalDataUrl;
+    }
+
+    try {
+      const image = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('Failed to decode image.'));
+        img.src = originalDataUrl;
+      });
+
+      const maxWidth = 1280;
+      const scale = image.width > maxWidth ? maxWidth / image.width : 1;
+      const width = Math.round(image.width * scale);
+      const height = Math.round(image.height * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d');
+      if (!context) {
+        return originalDataUrl;
+      }
+      context.drawImage(image, 0, 0, width, height);
+      return canvas.toDataURL('image/jpeg', 0.86);
+    } catch (error) {
+      return originalDataUrl;
+    }
+  };
+
+  const handleImageUpload = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      setForm((prev) => ({ ...prev, image_url: '' }));
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      setError('Please select a valid image file.');
+      event.target.value = '';
+      return;
+    }
+
+    if (file.size > 3 * 1024 * 1024) {
+      setError('Image must be smaller than 3MB.');
+      event.target.value = '';
+      return;
+    }
+
+    setError('');
+    setImageProcessing(true);
+    convertImageToJpegDataUrl(file)
+      .then((dataUrl) => {
+        setForm((prev) => ({ ...prev, image_url: dataUrl }));
+      })
+      .catch(() => {
+        setError('Could not process the selected image.');
+        event.target.value = '';
+      })
+      .finally(() => {
+        setImageProcessing(false);
+      });
+  };
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setError('');
+    setSuccess('');
+
+    if (!currentUser?.id) {
+      setError('Please login first to add a listing.');
+      return;
+    }
+
+    if (imageProcessing) {
+      setError('Image is still processing. Please wait a moment and submit again.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const response = await fetch(`${API_BASE}/listings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem(TOKEN_STORAGE_KEY) || ''}`
+        },
+        body: JSON.stringify({
+          owner_id: currentUser.id,
+          title: form.title,
+          type: form.type,
+          city: form.city,
+          locality: form.locality,
+          price: Number(form.price),
+          description: form.description,
+          image_url: form.image_url
+        })
+      });
+
+      const rawBody = await response.text();
+      let data = {};
+      try {
+        data = rawBody ? JSON.parse(rawBody) : {};
+      } catch (parseError) {
+        throw new Error('Listing API returned non-JSON response.');
+      }
+
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to create listing');
+      }
+
+      setSuccess('Listing added successfully.');
+      setForm({
+        title: '',
+        type: 'PG',
+        city: '',
+        locality: '',
+        price: '',
+        description: '',
+        image_url: ''
+      });
+      if (imageInputRef.current) {
+        imageInputRef.current.value = '';
+      }
+
+      setTimeout(() => {
+        onCreated();
+      }, 400);
+    } catch (submitError) {
+      setError(submitError.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <main className="auth-page">
+      <div className="auth-shell">
+        <button className="auth-back" onClick={onNavigateHome}>
+          ← Back to Home
+        </button>
+        <h1 className="auth-title">Add Listing</h1>
+        <p className="auth-subtitle">Create a new property listing to publish it on NestHub.</p>
+
+        <form className="auth-form" onSubmit={handleSubmit}>
+          <label>
+            Title
+            <input type="text" name="title" value={form.title} onChange={handleChange} required />
+          </label>
+          <label>
+            Type
+            <select name="type" value={form.type} onChange={handleChange}>
+              <option value="PG">PG</option>
+              <option value="Flat">Flat</option>
+              <option value="Hostel">Hostel</option>
+            </select>
+          </label>
+          <label>
+            City
+            <input type="text" name="city" value={form.city} onChange={handleChange} required />
+          </label>
+          <label>
+            Locality
+            <input type="text" name="locality" value={form.locality} onChange={handleChange} required />
+          </label>
+          <label>
+            Price
+            <input
+              type="number"
+              name="price"
+              value={form.price}
+              onChange={handleChange}
+              min={0}
+              required
+            />
+          </label>
+          <label>
+            Description
+            <textarea
+              name="description"
+              value={form.description}
+              onChange={handleChange}
+              rows={4}
+              required
+            />
+          </label>
+          <label>
+            Upload Image
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={handleImageUpload}
+            />
+          </label>
+          {form.image_url ? (
+            <div className="upload-preview-block">
+              <img src={form.image_url} alt="Listing preview" className="upload-preview-image" />
+            </div>
+          ) : null}
+          {imageProcessing ? <p className="listings-feedback">Processing image...</p> : null}
+
+          {error ? <p className="auth-message error">{error}</p> : null}
+          {success ? <p className="auth-message success">{success}</p> : null}
+
+          <button type="submit" className="auth-submit" disabled={submitting || imageProcessing}>
+            {submitting ? 'Saving...' : imageProcessing ? 'Processing...' : 'Create Listing'}
+          </button>
+        </form>
+      </div>
+    </main>
+  );
+};
 
 function App() {
   const [apiStatus, setApiStatus] = useState('checking');
+  const [pathname, setPathname] = useState(window.location.pathname);
+  const [currentUser, setCurrentUser] = useState(getStoredUser);
+  const [allListings, setAllListings] = useState([]);
+  const [listingsLoading, setListingsLoading] = useState(false);
+  const [listingsError, setListingsError] = useState('');
+  const [deletingListingId, setDeletingListingId] = useState(null);
+  const [reviewDrafts, setReviewDrafts] = useState({});
+  const [reviewSubmittingId, setReviewSubmittingId] = useState(null);
+  const [reviewStatus, setReviewStatus] = useState({});
 
   useEffect(() => {
     const checkApi = async () => {
@@ -19,6 +556,193 @@ function App() {
     checkApi();
   }, []);
 
+  useEffect(() => {
+    const handlePopState = () => setPathname(window.location.pathname);
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const fetchListings = async () => {
+    setListingsLoading(true);
+    setListingsError('');
+    try {
+      const response = await fetch(`${API_BASE}/listings`);
+      const rawBody = await response.text();
+      let data = [];
+      try {
+        data = rawBody ? JSON.parse(rawBody) : [];
+      } catch (parseError) {
+        throw new Error('Listings API returned non-JSON response.');
+      }
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to load listings');
+      }
+      setAllListings(Array.isArray(data) ? data : []);
+    } catch (error) {
+      setListingsError(error.message);
+    } finally {
+      setListingsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (pathname === '/listings') {
+      fetchListings();
+    }
+  }, [pathname]);
+
+  useEffect(() => {
+    if (pathname === '/listings/new' && !currentUser) {
+      navigateWithoutEvent('/login', setPathname);
+    }
+  }, [pathname, currentUser]);
+
+  const handleAuthSuccess = () => {
+    setCurrentUser(getStoredUser());
+    window.history.pushState({}, '', '/');
+    setPathname('/');
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    localStorage.removeItem(USER_STORAGE_KEY);
+    setCurrentUser(null);
+    if (window.location.pathname !== '/') {
+      window.history.pushState({}, '', '/');
+      setPathname('/');
+    }
+  };
+
+  const handleDeleteListing = async (listingId) => {
+    const confirmDelete = window.confirm('Delete this listing permanently?');
+    if (!confirmDelete) {
+      return;
+    }
+
+    setListingsError('');
+    setDeletingListingId(listingId);
+    try {
+      const response = await fetch(`${API_BASE}/listings/${listingId}`, {
+        method: 'DELETE'
+      });
+      const rawBody = await response.text();
+      let data = {};
+      try {
+        data = rawBody ? JSON.parse(rawBody) : {};
+      } catch (parseError) {
+        data = {};
+      }
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to delete listing');
+      }
+      setAllListings((prev) =>
+        prev.filter((listing) => (listing._id || listing.id) !== listingId)
+      );
+    } catch (error) {
+      setListingsError(error.message);
+    } finally {
+      setDeletingListingId(null);
+    }
+  };
+
+  const handleReviewDraftChange = (listingId, text) => {
+    setReviewDrafts((prev) => ({ ...prev, [listingId]: text }));
+  };
+
+  const handleSubmitReview = async (listingId) => {
+    const reviewText = (reviewDrafts[listingId] || '').trim();
+    if (!reviewText) {
+      setReviewStatus((prev) => ({ ...prev, [listingId]: 'Review text is required.' }));
+      return;
+    }
+
+    setReviewSubmittingId(listingId);
+    setReviewStatus((prev) => ({ ...prev, [listingId]: '' }));
+    try {
+      const response = await fetch(`${API_BASE}/reviews`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem(TOKEN_STORAGE_KEY) || ''}`
+        },
+        body: JSON.stringify({
+          listing_id: listingId,
+          review_text: reviewText
+        })
+      });
+
+      const rawBody = await response.text();
+      let data = {};
+      try {
+        data = rawBody ? JSON.parse(rawBody) : {};
+      } catch (parseError) {
+        data = {};
+      }
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to submit review');
+      }
+
+      setReviewDrafts((prev) => ({ ...prev, [listingId]: '' }));
+      setReviewStatus((prev) => ({ ...prev, [listingId]: 'Review submitted successfully.' }));
+    } catch (error) {
+      setReviewStatus((prev) => ({ ...prev, [listingId]: error.message }));
+    } finally {
+      setReviewSubmittingId(null);
+    }
+  };
+
+  if (pathname === '/login') {
+    return (
+      <AuthPage
+        mode="login"
+        onNavigateHome={(event) => navigateTo(event, '/', setPathname)}
+        onToggleMode={(event) => navigateTo(event, '/register', setPathname)}
+        onAuthSuccess={handleAuthSuccess}
+      />
+    );
+  }
+
+  if (pathname === '/register') {
+    return (
+      <AuthPage
+        mode="register"
+        onNavigateHome={(event) => navigateTo(event, '/', setPathname)}
+        onToggleMode={(event) => navigateTo(event, '/login', setPathname)}
+        onAuthSuccess={handleAuthSuccess}
+      />
+    );
+  }
+
+  if (pathname === '/listings') {
+    return (
+      <ListingsPage
+        listings={allListings}
+        loading={listingsLoading}
+        error={listingsError}
+        currentUser={currentUser}
+        deletingListingId={deletingListingId}
+        reviewDrafts={reviewDrafts}
+        reviewSubmittingId={reviewSubmittingId}
+        reviewStatus={reviewStatus}
+        onReviewDraftChange={handleReviewDraftChange}
+        onSubmitReview={handleSubmitReview}
+        onDeleteListing={handleDeleteListing}
+        onNavigateHome={(event) => navigateTo(event, '/', setPathname)}
+        onNavigateAddListing={() => navigateWithoutEvent('/listings/new', setPathname)}
+      />
+    );
+  }
+
+  if (pathname === '/listings/new') {
+    return (
+      <AddListingPage
+        currentUser={currentUser}
+        onNavigateHome={(event) => navigateTo(event, '/', setPathname)}
+        onCreated={() => navigateWithoutEvent('/listings', setPathname)}
+      />
+    );
+  }
+
   return (
     <>
 
@@ -29,7 +753,28 @@ function App() {
       <li><a href="#how">How it Works</a></li>
       <li><a href="#bot">WhatsApp Bot</a></li>
     </ul>
-    <a href="#" className="nav-cta">List Your Property</a>
+    <div className="nav-auth">
+      {currentUser ? (
+        <>
+          <span className="nav-role">{currentUser.role === 'owner' ? 'Owner' : 'Tenant'}</span>
+          <a
+            href="/listings/new"
+            className="nav-login"
+            onClick={(event) => navigateTo(event, '/listings/new', setPathname)}
+          >
+            Add Listing
+          </a>
+          <button type="button" className="nav-logout" onClick={handleLogout}>
+            Logout
+          </button>
+        </>
+      ) : (
+        <>
+          <a href="/login" className="nav-login" onClick={(event) => navigateTo(event, '/login', setPathname)}>Login</a>
+          <a href="/register" className="nav-cta" onClick={(event) => navigateTo(event, '/register', setPathname)}>Register</a>
+        </>
+      )}
+    </div>
   </nav>
   <div className="api-pill">API: {apiStatus}</div>
   <section className="hero">
@@ -39,7 +784,7 @@ function App() {
       <p className="hero-sub">Verified PGs, flats & hostels — with honest reviews on noise, water, and electricity. No
         surprises, no scams.</p>
       <div className="hero-actions">
-        <a href="#" className="btn-primary">Search Rooms</a>
+        <a href="/listings" className="btn-primary" onClick={(event) => navigateTo(event, '/listings', setPathname)}>Search Rooms</a>
         <a href="#how" className="btn-secondary">How it Works</a>
       </div>
       <div className="hero-stats">
@@ -66,7 +811,11 @@ function App() {
         <div className="room-card card-bg1">
           <div className="card-img">🏢</div>
         </div>
-        <div className="room-card card-main">
+        <a
+          href="/listings"
+          className="room-card card-main room-card-link"
+          onClick={(event) => navigateTo(event, '/listings', setPathname)}
+        >
           <div className="card-img">🏡</div>
           <div className="card-body">
             <div className="card-type">PG — Vijay Nagar</div>
@@ -82,7 +831,7 @@ function App() {
               <div className="verified-badge">✓ Verified</div>
             </div>
           </div>
-        </div>
+        </a>
       </div>
       <div className="whatsapp-float">📱 Ask via WhatsApp</div>
     </div>
@@ -297,8 +1046,8 @@ function App() {
     <h2 className="cta-title">Your next home is one search away.</h2>
     <p>Join thousands of students and workers who found safe, affordable rooms without the headache.</p>
     <div className="cta-buttons">
-      <a href="#" className="btn-white">Search Rooms Now</a>
-      <a href="#" className="btn-outline-white">List Your Property</a>
+      <a href="/listings" className="btn-white" onClick={(event) => navigateTo(event, '/listings', setPathname)}>Search Rooms Now</a>
+      <a href="/listings/new" className="btn-outline-white" onClick={(event) => navigateTo(event, '/listings/new', setPathname)}>List Your Property</a>
     </div>
   </section>
   <footer>
