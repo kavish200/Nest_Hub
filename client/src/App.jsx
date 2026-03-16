@@ -28,6 +28,11 @@ const navigateWithoutEvent = (path, setPathname) => {
   setPathname(path);
 };
 
+const getListingIdFromPath = (path) => {
+  const match = path.match(/^\/listings\/([^/]+)$/);
+  return match ? match[1] : null;
+};
+
 const AuthPage = ({ mode, onNavigateHome, onToggleMode, onAuthSuccess }) => {
   const isRegister = mode === 'register';
   const [form, setForm] = useState({
@@ -35,9 +40,11 @@ const AuthPage = ({ mode, onNavigateHome, onToggleMode, onAuthSuccess }) => {
     email: '',
     phone: '',
     password: '',
-    role: 'tenant'
+    role: 'tenant',
+    avatar_url: ''
   });
   const [loading, setLoading] = useState(false);
+  const [imageProcessing, setImageProcessing] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
@@ -46,10 +53,58 @@ const AuthPage = ({ mode, onNavigateHome, onToggleMode, onAuthSuccess }) => {
     setForm((prev) => ({ ...prev, [name]: value }));
   };
 
+  const readFileAsDataUrl = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result || '');
+      reader.onerror = () => reject(new Error('Failed to read image file.'));
+      reader.readAsDataURL(file);
+    });
+
+  const handleAvatarUpload = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      setForm((prev) => ({ ...prev, avatar_url: '' }));
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      setError('Please select a valid image file.');
+      event.target.value = '';
+      return;
+    }
+
+    if (file.size > 3 * 1024 * 1024) {
+      setError('Image must be smaller than 3MB.');
+      event.target.value = '';
+      return;
+    }
+
+    setError('');
+    setImageProcessing(true);
+    readFileAsDataUrl(file)
+      .then((dataUrl) => {
+        setForm((prev) => ({ ...prev, avatar_url: dataUrl }));
+      })
+      .catch(() => {
+        setError('Could not process the selected image.');
+        event.target.value = '';
+      })
+      .finally(() => {
+        setImageProcessing(false);
+      });
+  };
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     setError('');
     setSuccess('');
+
+    if (isRegister && imageProcessing) {
+      setError('Image is still processing. Please wait a moment and submit again.');
+      return;
+    }
+
     setLoading(true);
 
     const endpoint = isRegister ? `${API_BASE}/auth/register` : `${API_BASE}/auth/login`;
@@ -59,7 +114,8 @@ const AuthPage = ({ mode, onNavigateHome, onToggleMode, onAuthSuccess }) => {
           email: form.email,
           phone: form.phone,
           password: form.password,
-          role: form.role
+          role: form.role,
+          avatar_url: form.avatar_url
         }
       : { email: form.email, password: form.password };
 
@@ -140,6 +196,16 @@ const AuthPage = ({ mode, onNavigateHome, onToggleMode, onAuthSuccess }) => {
                   <option value="owner">Owner</option>
                 </select>
               </label>
+              <label>
+                Profile Image (optional)
+                <input type="file" accept="image/*" onChange={handleAvatarUpload} />
+              </label>
+              {form.avatar_url ? (
+                <div className="upload-preview-block">
+                  <img src={form.avatar_url} alt="Profile preview" className="upload-preview-image" />
+                </div>
+              ) : null}
+              {imageProcessing ? <p className="listings-feedback">Processing image...</p> : null}
             </>
           )}
 
@@ -162,8 +228,8 @@ const AuthPage = ({ mode, onNavigateHome, onToggleMode, onAuthSuccess }) => {
           {error ? <p className="auth-message error">{error}</p> : null}
           {success ? <p className="auth-message success">{success}</p> : null}
 
-          <button type="submit" className="auth-submit" disabled={loading}>
-            {loading ? 'Please wait...' : isRegister ? 'Register' : 'Login'}
+          <button type="submit" className="auth-submit" disabled={loading || imageProcessing}>
+            {loading ? 'Please wait...' : imageProcessing ? 'Processing...' : isRegister ? 'Register' : 'Login'}
           </button>
         </form>
 
@@ -190,6 +256,7 @@ const ListingsPage = ({
   onReviewDraftChange,
   onSubmitReview,
   onDeleteListing,
+  onOpenListing,
   onNavigateHome,
   onNavigateAddListing
 }) => {
@@ -217,7 +284,19 @@ const ListingsPage = ({
 
         <div className="listings-grid">
           {listings.map((listing) => (
-            <article key={listing._id || listing.id} className="listing-item">
+            <article
+              key={listing._id || listing.id}
+              className="listing-item listing-item-clickable"
+              role="button"
+              tabIndex={0}
+              onClick={() => onOpenListing(listing._id || listing.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onOpenListing(listing._id || listing.id);
+                }
+              }}
+            >
               {listing.image_url ? (
                 <img
                   className="listing-image"
@@ -239,7 +318,11 @@ const ListingsPage = ({
               </p>
               <p className="listing-description">{listing.description}</p>
               {currentUser?.role === 'tenant' ? (
-                <div className="review-box">
+                <div
+                  className="review-box"
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
+                >
                   <textarea
                     className="review-input"
                     rows={3}
@@ -268,7 +351,10 @@ const ListingsPage = ({
                 <button
                   type="button"
                   className="listing-delete-btn"
-                  onClick={() => onDeleteListing(listing._id || listing.id)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onDeleteListing(listing._id || listing.id);
+                  }}
                   disabled={deletingListingId === (listing._id || listing.id)}
                 >
                   {deletingListingId === (listing._id || listing.id) ? 'Deleting...' : 'Delete'}
@@ -528,6 +614,67 @@ const AddListingPage = ({ currentUser, onNavigateHome, onCreated }) => {
   );
 };
 
+const ListingDetailPage = ({ listing, loading, error, onNavigateListings, onNavigateHome }) => {
+  return (
+    <main className="listings-page">
+      <div className="listings-shell">
+        <div className="listings-topbar">
+          <button type="button" className="auth-back" onClick={onNavigateListings}>
+            ← Back to Listings
+          </button>
+          <button type="button" className="nav-cta" onClick={onNavigateHome}>
+            Home
+          </button>
+        </div>
+
+        {loading ? <p className="listings-feedback">Loading post details...</p> : null}
+        {error ? <p className="auth-message error">{error}</p> : null}
+
+        {!loading && !error && listing ? (
+          <article className="listing-detail-card">
+            {listing.image_url ? (
+              <img
+                className="listing-detail-image"
+                src={listing.image_url}
+                alt={listing.title}
+                loading="lazy"
+              />
+            ) : null}
+            <div className="listing-detail-head">
+              <span className="listing-type">{listing.type}</span>
+              <span className="listing-price">Rs {listing.price}/month</span>
+            </div>
+            <h1 className="listing-detail-title">{listing.title}</h1>
+            <p className="listing-location">
+              {listing.locality}, {listing.city}
+            </p>
+            <p className="listing-detail-description">{listing.description}</p>
+
+            <div className="listing-meta-grid">
+              <div>
+                <strong>Owner</strong>
+                <p>{listing?.owner_id?.name || 'N/A'}</p>
+              </div>
+              <div>
+                <strong>Contact</strong>
+                <p>{listing?.owner_id?.phone || 'N/A'}</p>
+              </div>
+              <div>
+                <strong>Average Rating</strong>
+                <p>{listing?.rating_summary?.average_rating || 0} / 10</p>
+              </div>
+              <div>
+                <strong>Total Ratings</strong>
+                <p>{listing?.rating_summary?.count || 0}</p>
+              </div>
+            </div>
+          </article>
+        ) : null}
+      </div>
+    </main>
+  );
+};
+
 function App() {
   const [apiStatus, setApiStatus] = useState('checking');
   const [pathname, setPathname] = useState(window.location.pathname);
@@ -539,6 +686,10 @@ function App() {
   const [reviewDrafts, setReviewDrafts] = useState({});
   const [reviewSubmittingId, setReviewSubmittingId] = useState(null);
   const [reviewStatus, setReviewStatus] = useState({});
+  const [selectedListing, setSelectedListing] = useState(null);
+  const [selectedListingLoading, setSelectedListingLoading] = useState(false);
+  const [selectedListingError, setSelectedListingError] = useState('');
+  const listingIdFromPath = getListingIdFromPath(pathname);
 
   useEffect(() => {
     const checkApi = async () => {
@@ -585,11 +736,41 @@ function App() {
     }
   };
 
+  const fetchListingById = async (listingId) => {
+    setSelectedListingLoading(true);
+    setSelectedListingError('');
+    try {
+      const response = await fetch(`${API_BASE}/listings/${listingId}`);
+      const rawBody = await response.text();
+      let data = {};
+      try {
+        data = rawBody ? JSON.parse(rawBody) : {};
+      } catch (parseError) {
+        throw new Error('Listing details API returned non-JSON response.');
+      }
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to load listing details');
+      }
+      setSelectedListing(data);
+    } catch (error) {
+      setSelectedListing(null);
+      setSelectedListingError(error.message);
+    } finally {
+      setSelectedListingLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (pathname === '/listings') {
       fetchListings();
     }
   }, [pathname]);
+
+  useEffect(() => {
+    if (listingIdFromPath) {
+      fetchListingById(listingIdFromPath);
+    }
+  }, [listingIdFromPath]);
 
   useEffect(() => {
     if (pathname === '/listings/new' && !currentUser) {
@@ -727,8 +908,21 @@ function App() {
         onReviewDraftChange={handleReviewDraftChange}
         onSubmitReview={handleSubmitReview}
         onDeleteListing={handleDeleteListing}
+        onOpenListing={(listingId) => navigateWithoutEvent(`/listings/${listingId}`, setPathname)}
         onNavigateHome={(event) => navigateTo(event, '/', setPathname)}
         onNavigateAddListing={() => navigateWithoutEvent('/listings/new', setPathname)}
+      />
+    );
+  }
+
+  if (listingIdFromPath) {
+    return (
+      <ListingDetailPage
+        listing={selectedListing}
+        loading={selectedListingLoading}
+        error={selectedListingError}
+        onNavigateListings={() => navigateWithoutEvent('/listings', setPathname)}
+        onNavigateHome={() => navigateWithoutEvent('/', setPathname)}
       />
     );
   }
